@@ -12,8 +12,8 @@ function createHeadingComponent(level) {
             accessibilityRole: 'header',
         },
     });
-    return forwardRef((props, ref) => {
-        return (<Text {...nativeProps} {...props} style={[styles[`h${level}`], props.style]} ref={ref}/>);
+    return forwardRef(({ style, ...props }, ref) => {
+        return <Text {...nativeProps} {...props} style={[styles[`h${level}`], style]} ref={ref}/>;
     });
 }
 export const H1 = createHeadingComponent(1);

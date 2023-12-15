@@ -14,10 +14,8 @@ function createHeadingComponent(level: number): ComponentType<TextProps> {
       accessibilityRole: 'header',
     },
   });
-  return forwardRef((props: TextProps, ref) => {
-    return (
-      <Text {...nativeProps} {...props} style={[styles[`h${level}`], props.style]} ref={ref} />
-    );
+  return forwardRef(({ style, ...props }: TextProps, ref) => {
+    return <Text {...nativeProps} {...props} style={[styles[`h${level}`], style]} ref={ref} />;
   }) as ComponentType<TextProps>;
 }
 

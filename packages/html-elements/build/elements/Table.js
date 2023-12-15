@@ -16,17 +16,17 @@ export const TBody = forwardRef((props, ref) => {
 export const TFoot = forwardRef((props, ref) => {
     return <View {...props} ref={ref}/>;
 });
-export const TH = forwardRef((props, ref) => {
-    return <TableText {...props} style={[styles.th, props.style]} ref={ref}/>;
+export const TH = forwardRef(({ style, ...props }, ref) => {
+    return <TableText {...props} style={[styles.th, style]} ref={ref}/>;
 });
-export const TR = forwardRef((props, ref) => {
-    return <View {...props} style={[styles.tr, props.style]} ref={ref}/>;
+export const TR = forwardRef(({ style, ...props }, ref) => {
+    return <View {...props} style={[styles.tr, style]} ref={ref}/>;
 });
-export const TD = forwardRef((props, ref) => {
-    return <TableText {...props} style={[styles.td, props.style]} ref={ref}/>;
+export const TD = forwardRef(({ style, ...props }, ref) => {
+    return <TableText {...props} style={[styles.td, style]} ref={ref}/>;
 });
-export const Caption = forwardRef((props, ref) => {
-    return <Text {...props} style={[styles.caption, props.style]} ref={ref}/>;
+export const Caption = forwardRef(({ style, ...props }, ref) => {
+    return <Text {...props} style={[styles.caption, style]} ref={ref}/>;
 });
 const styles = StyleSheet.create({
     caption: {

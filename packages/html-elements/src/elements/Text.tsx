@@ -3,7 +3,7 @@ import { StyleSheet, Platform } from 'react-native';
 
 import { BlockQuoteProps, QuoteProps, TimeProps } from './Text.types';
 import { em } from '../css/units';
-import Text, { TextProps } from '../primitives/Text';
+import Text, { TextProps, TextStyle } from '../primitives/Text';
 import View, { ViewProps } from '../primitives/View';
 
 export const P = forwardRef(({ style, ...props }: TextProps, ref) => {
@@ -52,11 +52,11 @@ function isTextProps(props: any): props is TextProps {
 
 type PreProps = TextProps | ViewProps;
 
-export const Pre = forwardRef((props: PreProps, ref: any) => {
+export const Pre = forwardRef(({ style, ...props }: PreProps, ref: any) => {
   if (isTextProps(props)) {
-    return <Text {...props} style={[styles.code, styles.pre, props.style]} ref={ref} />;
+    return <Text {...props} style={[styles.code, styles.pre, style as TextStyle]} ref={ref} />;
   }
-  return <View {...props} style={[styles.pre, props.style]} ref={ref} />;
+  return <View {...props} style={[styles.pre, style]} ref={ref} />;
 }) as ComponentType<PreProps>;
 
 // Extract dateTime to prevent passing it to the native Text element

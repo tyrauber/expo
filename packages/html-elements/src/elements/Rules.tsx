@@ -3,8 +3,8 @@ import { StyleSheet } from 'react-native';
 
 import View, { ViewProps } from '../primitives/View';
 
-export const HR = forwardRef((props: ViewProps, ref) => {
-  return <View {...props} style={[styles.hr, props.style]} ref={ref} />;
+export const HR = forwardRef(({ style, ...props }: ViewProps, ref) => {
+  return <View {...props} style={[styles.hr, style]} ref={ref} />;
 }) as ComponentType<ViewProps>;
 
 const styles = StyleSheet.create({

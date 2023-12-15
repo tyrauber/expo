@@ -22,20 +22,20 @@ export const TFoot = forwardRef((props: ViewProps, ref) => {
   return <View {...props} ref={ref} />;
 }) as ComponentType<ViewProps>;
 
-export const TH = forwardRef((props: TableTextProps, ref: any) => {
-  return <TableText {...props} style={[styles.th, props.style]} ref={ref} />;
+export const TH = forwardRef(({ style, ...props }: TableTextProps, ref: any) => {
+  return <TableText {...props} style={[styles.th, style]} ref={ref} />;
 }) as ComponentType<TableTextProps>;
 
-export const TR = forwardRef((props: ViewProps, ref) => {
-  return <View {...props} style={[styles.tr, props.style]} ref={ref} />;
+export const TR = forwardRef(({ style, ...props }: ViewProps, ref) => {
+  return <View {...props} style={[styles.tr, style]} ref={ref} />;
 }) as ComponentType<ViewProps>;
 
-export const TD = forwardRef((props: TableTextProps, ref: any) => {
-  return <TableText {...props} style={[styles.td, props.style]} ref={ref} />;
+export const TD = forwardRef(({ style, ...props }: TableTextProps, ref: any) => {
+  return <TableText {...props} style={[styles.td, style]} ref={ref} />;
 }) as ComponentType<TableTextProps>;
 
-export const Caption = forwardRef((props: TextProps, ref: any) => {
-  return <Text {...props} style={[styles.caption, props.style]} ref={ref} />;
+export const Caption = forwardRef(({ style, ...props }: TextProps, ref: any) => {
+  return <Text {...props} style={[styles.caption, style]} ref={ref} />;
 }) as ComponentType<TextProps>;
 
 const styles = StyleSheet.create({

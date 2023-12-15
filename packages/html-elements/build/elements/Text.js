@@ -35,11 +35,11 @@ export const Code = forwardRef(({ style, ...props }, ref) => {
 function isTextProps(props) {
     return typeof props.children === 'string';
 }
-export const Pre = forwardRef((props, ref) => {
+export const Pre = forwardRef(({ style, ...props }, ref) => {
     if (isTextProps(props)) {
-        return <Text {...props} style={[styles.code, styles.pre, props.style]} ref={ref}/>;
+        return <Text {...props} style={[styles.code, styles.pre, style]} ref={ref}/>;
     }
-    return <View {...props} style={[styles.pre, props.style]} ref={ref}/>;
+    return <View {...props} style={[styles.pre, style]} ref={ref}/>;
 });
 // Extract dateTime to prevent passing it to the native Text element
 export const Time = forwardRef(({ dateTime, ...props }, ref) => {
