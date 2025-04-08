@@ -9,12 +9,20 @@ class SaveToLibraryDelegate: NSObject {
   #if os(iOS)
   func writeImage(_ image: UIImage, withCallback callback: @escaping SaveToLibraryCallback) {
     self.callback = callback
-    UIImageWriteToSavedPhotosAlbum(
-      image,
-      self,
-      #selector(image(_:didFinishSavingWithError:contextInfo:)),
-      nil
-    )
+    PHPhotoLibrary.shared().performChanges {
+      if let imageUrl = image.accessibilityValue,
+         let data = try? Data(contentsOf: URL(fileURLWithPath: imageUrl)) {
+        let request = PHAssetCreationRequest.forAsset()
+        request.addResource(with: .photo, data: data, options: nil)
+      } else {
+        if let data = image.pngData() {
+          let request = PHAssetCreationRequest.forAsset()
+          request.addResource(with: .photo, data: data, options: nil)
+        }
+      }
+    } completionHandler: { _, error in
+      self.triggerCallback(nil, with: error)
+    }
   }
 
   func writeVideo(_ movieUrl: URL, withCallback callback: @escaping SaveToLibraryCallback) {

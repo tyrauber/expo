@@ -127,16 +127,20 @@ public class MediaLibraryModule: Module, PhotoLibraryObserverHandler {
       }
 
       if assetType == .image {
-        if localUrl.pathExtension.lowercased() == "gif" {
-          delegate.writeGIF(localUrl, withCallback: callback)
-          return
-        }
-
-        guard let image = UIImage(data: try Data(contentsOf: localUrl)) else {
+        if !UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(localUrl.path) {
           promise.reject(MissingFileException(localUrl.absoluteString))
           return
         }
-        delegate.writeImage(image, withCallback: callback)
+
+        PHPhotoLibrary.shared().performChanges {
+          _ = PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: localUrl)
+        } completionHandler: { success, error in
+          if success {
+            callback(nil, nil)
+          } else {
+            callback(nil, error)
+          }
+        }
         return
       } else if assetType == .video {
         if UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(localUrl.path) {
