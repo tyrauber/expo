@@ -50,6 +50,13 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
   // Minimum jobs per task to ensure functionality even with many tasks.
   private static final int MIN_JOBS_PER_TASK = 3;
 
+  // Merge window thresholds (in milliseconds) based on queue pressure.
+  // Lower pressure = shorter window = more separate jobs = faster execution.
+  // Higher pressure = longer window = more merging = stay under limits.
+  private static final long MERGE_WINDOW_LOW_PRESSURE_MS = 1_000; // 1 second
+  private static final long MERGE_WINDOW_MEDIUM_PRESSURE_MS = 10_000; // 10 seconds
+  private static final long MERGE_WINDOW_HIGH_PRESSURE_MS = 60_000; // 1 minute
+
   // region TaskManagerUtilsInterface
 
   @Override
@@ -110,6 +117,29 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
   // endregion TaskManagerUtilsInterface
   // region private helpers
 
+  /**
+   * Calculate the merge window based on queue pressure.
+   * Lower pressure = shorter window = prefer creating new jobs.
+   * Higher pressure = longer window = prefer merging into existing jobs.
+   */
+  private long getMergeWindowMs(int pendingJobsForTask, int maxJobsPerTask) {
+    if (maxJobsPerTask <= 0) {
+      return Long.MAX_VALUE;
+    }
+
+    float pressure = (float) pendingJobsForTask / maxJobsPerTask;
+
+    if (pressure < 0.1f) {
+      return MERGE_WINDOW_LOW_PRESSURE_MS; // Almost empty - prefer new jobs
+    } else if (pressure < 0.5f) {
+      return MERGE_WINDOW_MEDIUM_PRESSURE_MS; // Filling up - merge if recent
+    } else if (pressure < 0.8f) {
+      return MERGE_WINDOW_HIGH_PRESSURE_MS; // Getting full - merge more aggressively
+    } else {
+      return Long.MAX_VALUE; // Critical - merge into any non-executing job
+    }
+  }
+
   private void updateOrScheduleJob(Context context, TaskInterface task, List<PersistableBundle> data) {
     JobScheduler jobScheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
 
@@ -126,6 +156,7 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
       pendingJobs = new ArrayList<>();
     }
 
+    // Sort by job ID (ascending) to find lowest unused ID
     Collections.sort(pendingJobs, new Comparator<JobInfo>() {
       @Override
       public int compare(JobInfo a, JobInfo b) {
@@ -133,12 +164,11 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
       }
     });
 
-    // Count existing jobs for this task, find lowest unused job ID, track
-    // the newest job (highest ID) for potential merging, and count unique tasks.
+    // Collect info about pending jobs for this task
     int newJobId = 0;
     int pendingJobsForTask = 0;
-    JobInfo newestJobForTask = null;
     Set<String> uniqueTaskNames = new HashSet<>();
+    List<JobInfo> taskJobs = new ArrayList<>();
 
     for (JobInfo jobInfo : pendingJobs) {
       int jobId = jobInfo.getId();
@@ -154,10 +184,7 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
 
       if (isJobInfoRelatedToTask(jobInfo, task)) {
         pendingJobsForTask++;
-        // Track the newest (highest ID) job for this task
-        if (newestJobForTask == null || jobId > newestJobForTask.getId()) {
-          newestJobForTask = jobInfo;
-        }
+        taskJobs.add(jobInfo);
 
         // Skip this job ID, continue looking for an unused ID
         if (newJobId == jobId) {
@@ -178,53 +205,88 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
     int availableSlots = ANDROID_JOB_LIMIT - JOB_LIMIT_SAFETY_BUFFER;
     int maxJobsPerTask = Math.max(MIN_JOBS_PER_TASK, availableSlots / uniqueTaskNames.size());
 
-    // Check if we've hit the per-task job limit.
-    // This prevents job exhaustion while still avoiding the ANR-causing
-    // cancel/reschedule pattern.
-    if (pendingJobsForTask >= maxJobsPerTask) {
-      // At limit: merge into the NEWEST pending job instead of dropping data.
-      // We only reschedule the newest job (which was recently scheduled anyway),
-      // preserving the older jobs' execution timeline. This prevents both:
-      // - Data loss (we merge instead of drop)
-      // - ANR (older jobs still execute on schedule)
-      if (newestJobForTask != null) {
-        Log.i(TAG, "Job limit reached for task '" + task.getName() + "' (" + pendingJobsForTask +
-            "/" + maxJobsPerTask + ", " + uniqueTaskNames.size() + " tasks). " +
-            "Merging data into newest job (id=" + newestJobForTask.getId() + ").");
+    // Calculate merge window based on queue pressure
+    long mergeWindowMs = getMergeWindowMs(pendingJobsForTask, maxJobsPerTask);
+    long now = System.currentTimeMillis();
+
+    // Sort task jobs by scheduled time (newest first) for merge candidate selection
+    Collections.sort(taskJobs, new Comparator<JobInfo>() {
+      @Override
+      public int compare(JobInfo a, JobInfo b) {
+        long timeA = a.getExtras().getLong("scheduledTime", 0);
+        long timeB = b.getExtras().getLong("scheduledTime", 0);
+        return Long.compare(timeB, timeA); // Descending (newest first)
+      }
+    });
+
+    // Try to find a job we can safely merge into:
+    // - Not currently executing (race condition protection)
+    // - Young enough (within merge window based on pressure)
+    for (JobInfo jobInfo : taskJobs) {
+      int jobId = jobInfo.getId();
+      PersistableBundle extras = jobInfo.getExtras();
+      long scheduledTime = extras.getLong("scheduledTime", 0);
+      long jobAgeMs = now - scheduledTime;
+
+      // Skip jobs that are currently executing (race condition protection)
+      if (TaskJobService.isJobExecuting(jobId)) {
+        Log.d(TAG, "Job " + jobId + " is executing, skipping for merge.");
+        continue;
+      }
+
+      // Check if job is young enough to merge into
+      if (jobAgeMs < mergeWindowMs) {
+        // Safe to merge - job is young and not executing
+        Log.i(TAG, "Merging data into job " + jobId + " for task '" + task.getName() +
+            "' (age=" + jobAgeMs + "ms, window=" + mergeWindowMs + "ms, pressure=" +
+            pendingJobsForTask + "/" + maxJobsPerTask + ")");
         try {
-          JobInfo mergedJobInfo = createJobInfoByMergingData(newestJobForTask, data);
-          jobScheduler.cancel(newestJobForTask.getId());
+          JobInfo mergedJobInfo = createJobInfoByMergingData(jobInfo, data);
+          jobScheduler.cancel(jobId);
           jobScheduler.schedule(mergedJobInfo);
         } catch (IllegalStateException e) {
           Log.e(this.getClass().getName(), "Unable to merge into existing job: " + e.getMessage());
         }
+        return;
+      }
+    }
+
+    // No mergeable job found - check if we can create a new one
+    if (pendingJobsForTask < maxJobsPerTask) {
+      // Under limit - create new job
+      if (pendingJobsForTask > 0) {
+        Log.i(TAG, "Creating new job " + newJobId + " for task '" + task.getName() +
+            "' (" + pendingJobsForTask + " existing jobs too old to merge)");
+      }
+      try {
+        JobInfo jobInfo = createJobInfo(context, task, newJobId, data);
+        jobScheduler.schedule(jobInfo);
+      } catch (IllegalStateException e) {
+        Log.e(this.getClass().getName(), "Unable to schedule a new job: " + e.getMessage());
       }
       return;
     }
 
-    // Don't merge data into existing jobs and don't cancel/reschedule them.
-    //
-    // The original code merged new data into pending jobs, then cancelled and
-    // rescheduled them. This cancel/reschedule pattern resets Android's job
-    // scheduling state, preventing the job from ever becoming "old enough" to
-    // execute. The job keeps getting deferred as "new", data accumulates
-    // indefinitely, and eventually exceeds the Binder transaction limit (~1MB),
-    // causing "No response to onStartJob" ANR errors.
-    //
-    // The fix: Let existing jobs run naturally on their own timeline.
-    // Schedule new data as a separate job with a different ID.
-    // This ensures each batch of data will be delivered independently.
-    if (pendingJobsForTask > 0) {
-      Log.i(TAG, "Task '" + task.getName() + "' has " + pendingJobsForTask +
-          " pending job(s). Scheduling new job (id=" + newJobId + ") instead of merging.");
+    // At limit with no young jobs - force merge into newest non-executing job
+    for (JobInfo jobInfo : taskJobs) {
+      int jobId = jobInfo.getId();
+      if (!TaskJobService.isJobExecuting(jobId)) {
+        Log.w(TAG, "At job limit for task '" + task.getName() + "' (" + pendingJobsForTask +
+            "/" + maxJobsPerTask + "). Force merging into job " + jobId);
+        try {
+          JobInfo mergedJobInfo = createJobInfoByMergingData(jobInfo, data);
+          jobScheduler.cancel(jobId);
+          jobScheduler.schedule(mergedJobInfo);
+        } catch (IllegalStateException e) {
+          Log.e(this.getClass().getName(), "Unable to force merge into job: " + e.getMessage());
+        }
+        return;
+      }
     }
 
-    try {
-      JobInfo jobInfo = createJobInfo(context, task, newJobId, data);
-      jobScheduler.schedule(jobInfo);
-    } catch (IllegalStateException e) {
-      Log.e(this.getClass().getName(), "Unable to schedule a new job: " + e.getMessage());
-    }
+    // All jobs are executing - this is extremely rare, just log and drop
+    Log.e(TAG, "All " + pendingJobsForTask + " jobs for task '" + task.getName() +
+        "' are executing. Cannot schedule or merge. Data dropped.");
   }
 
   private JobInfo createJobInfoByMergingData(JobInfo jobInfo, List<PersistableBundle> data) {
@@ -238,6 +300,10 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
         mergedExtras.putPersistableBundle(String.valueOf(existingDataSize + i), data.get(i));
       }
     }
+
+    // Update scheduled time since we're rescheduling
+    mergedExtras.putLong("scheduledTime", System.currentTimeMillis());
+
     return createJobInfo(jobInfo.getId(), jobInfo.getService(), mergedExtras);
   }
 
@@ -288,6 +354,7 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
     extras.putInt(EXTRAS_REQUIRED_KEY, 1);
     extras.putString("appId", task.getAppScopeKey());
     extras.putString("taskName", task.getName());
+    extras.putLong("scheduledTime", System.currentTimeMillis());
 
     if (data != null) {
       extras.putInt("dataSize", data.size());

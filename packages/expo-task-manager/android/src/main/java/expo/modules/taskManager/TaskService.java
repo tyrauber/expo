@@ -331,6 +331,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
 
     if (consumer == null) {
       Log.w(TAG, "Task or consumer not found.");
+      // Mark job as finished even on early return
+      TaskJobService.markJobFinished(params.getJobId());
       return false;
     }
 
@@ -342,6 +344,9 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
     if (isAsyncJob) {
       // Make sure the task doesn't take more than 15 seconds
       finishJobAfterTimeout(jobService, params, MAX_TASK_EXECUTION_TIME_MS);
+    } else {
+      // Synchronous job - mark as finished immediately
+      TaskJobService.markJobFinished(params.getJobId());
     }
 
     return isAsyncJob;
@@ -624,6 +629,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
     handler.postDelayed(new Runnable() {
       @Override
       public void run() {
+        // Mark job as no longer executing before calling jobFinished
+        TaskJobService.markJobFinished(params.getJobId());
         jobService.jobFinished(params, false);
       }
     }, timeout);
