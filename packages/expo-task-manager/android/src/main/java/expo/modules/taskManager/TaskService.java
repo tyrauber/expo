@@ -54,7 +54,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
   private WeakReference<Context> mContextRef;
   private TaskManagerUtilsInterface mTaskManagerUtils;
 
-  // Map with task managers of running (foregrounded) apps. { "<appScopeKey>": WeakReference(TaskManagerInterface) }
+  // Map with task managers of running (foregrounded) apps. { "<appScopeKey>":
+  // WeakReference(TaskManagerInterface) }
   private static final Map<String, WeakReference<TaskManagerInterface>> sTaskManagers = new HashMap<>();
 
   // Same as above but for headless (backgrounded) apps.
@@ -65,7 +66,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
 
   private TasksAndEventsRepository mTasksAndEventsRepository;
 
-  // Map of callbacks for task execution events. Schema: { "<eventId>": TaskExecutionCallback }
+  // Map of callbacks for task execution events. Schema: { "<eventId>":
+  // TaskExecutionCallback }
   private static final Map<String, TaskExecutionCallback> sTaskCallbacks = new HashMap<>();
 
   public TaskService(Context context) {
@@ -83,7 +85,7 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
     return "TaskService";
   }
 
-  //region TaskServiceInterface
+  // region TaskServiceInterface
 
   @Override
   public boolean hasRegisteredTask(String taskName, String appScopeKey) {
@@ -92,7 +94,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
   }
 
   @Override
-  public void registerTask(String taskName, String appScopeKey, String appUrl, Class consumerClass, Map<String, Object> options) throws TaskRegisteringFailedException {
+  public void registerTask(String taskName, String appScopeKey, String appUrl, Class consumerClass,
+      Map<String, Object> options) throws TaskRegisteringFailedException {
     TaskInterface task = getTask(taskName, appScopeKey);
     Class unversionedConsumerClass = unversionedClassForClass(consumerClass);
 
@@ -107,7 +110,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
   }
 
   @Override
-  public void unregisterTask(String taskName, String appScopeKey, Class consumerClass) throws TaskNotFoundException, InvalidConsumerClassException {
+  public void unregisterTask(String taskName, String appScopeKey, Class consumerClass)
+      throws TaskNotFoundException, InvalidConsumerClassException {
     TaskInterface task = getTask(taskName, appScopeKey);
     Class unversionedConsumerClass = unversionedClassForClass(consumerClass);
 
@@ -206,7 +210,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
       if (appEvents.size() == 0) {
         sEvents.remove(appScopeKey);
 
-        // Invalidate app record but after 2 seconds delay so we can still take batched events.
+        // Invalidate app record but after 2 seconds delay so we can still take batched
+        // events.
         Handler handler = new Handler();
         handler.postDelayed(new Runnable() {
           @Override
@@ -257,7 +262,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
     mTasksAndEventsRepository.removeEvents(appScopeKey);
 
     if (!isHeadless) {
-      // Maybe update app url in user defaults. It might change only in non-headless mode.
+      // Maybe update app url in user defaults. It might change only in non-headless
+      // mode.
       maybeUpdateAppUrlForAppScopeKey(appUrl, appScopeKey);
     }
   }
@@ -349,10 +355,7 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
 
     TaskInterface task = getTask(taskName, appScopeKey);
 
-    // `notifyTaskJobCancelled` notifies TaskManagerUtils about a job for task being cancelled.
-    // It returns `true` if the job has been intentionally cancelled to be rescheduled,
-    // in that case we don't want to inform the consumer about cancellation.
-    if (task != null && !TaskManagerUtils.notifyTaskJobCancelled(task)) {
+    if (task != null) {
       TaskConsumerInterface consumer = task.getConsumer();
 
       if (consumer == null) {
@@ -361,7 +364,6 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
 
       Log.i(TAG, "Job for task '" + taskName + "' has been cancelled by the system.");
 
-      // cancels task
       return consumer.didCancelJob(jobService, params);
     }
 
@@ -402,7 +404,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
     }
 
     // The app is not fully loaded as its task manager is not there yet.
-    // We need to add event's body to the queue from which events will be executed once the task manager is ready.
+    // We need to add event's body to the queue from which events will be executed
+    // once the task manager is ready.
     if (!mTasksAndEventsRepository.hasEvents(appScopeKey)) {
       mTasksAndEventsRepository.putEvents(appScopeKey, new ArrayList<>());
     }
@@ -431,8 +434,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
     }
   }
 
-  //endregion
-  //region helpers
+  // endregion
+  // region helpers
 
   private HeadlessAppLoader getAppLoader() {
     if (mContextRef.get() != null) {
@@ -442,7 +445,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
     }
   }
 
-  private void internalRegisterTask(String taskName, String appScopeKey, String appUrl, Class<TaskConsumerInterface> consumerClass, Map<String, Object> options) throws TaskRegisteringFailedException {
+  private void internalRegisterTask(String taskName, String appScopeKey, String appUrl,
+      Class<TaskConsumerInterface> consumerClass, Map<String, Object> options) throws TaskRegisteringFailedException {
     Constructor<?> consumerConstructor;
     TaskConsumerInterface consumer;
     Context context = mContextRef.get();
@@ -460,7 +464,9 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
 
     Task task = new Task(taskName, appScopeKey, appUrl, consumer, options, this);
 
-    Map<String, TaskInterface> appTasks = mTasksAndEventsRepository.hasTasks(appScopeKey) ? mTasksAndEventsRepository.getTasks(appScopeKey) : new HashMap<String, TaskInterface>();
+    Map<String, TaskInterface> appTasks = mTasksAndEventsRepository.hasTasks(appScopeKey)
+        ? mTasksAndEventsRepository.getTasks(appScopeKey)
+        : new HashMap<String, TaskInterface>();
     appTasks.put(taskName, task);
     mTasksAndEventsRepository.putTasks(appScopeKey, appTasks);
 
@@ -530,16 +536,17 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
         appConfig.put("appUrl", appUrl);
 
         preferences
-          .edit()
-          .putString(appScopeKey, new JSONObject(appConfig).toString())
-          .apply();
+            .edit()
+            .putString(appScopeKey, new JSONObject(appConfig).toString())
+            .apply();
       }
     }
   }
 
   @SuppressWarnings("unchecked")
   private void restoreTasks() {
-    Map<String, TasksAndEventsRepository.AppConfig> apps = mTasksAndEventsRepository.readPersistedTasks(getSharedPreferences());
+    Map<String, TasksAndEventsRepository.AppConfig> apps = mTasksAndEventsRepository
+        .readPersistedTasks(getSharedPreferences());
 
     for (Map.Entry<String, TasksAndEventsRepository.AppConfig> entry : apps.entrySet()) {
       String appScopeKey = entry.getKey();
@@ -561,13 +568,15 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
               Map<String, Object> options = (HashMap<String, Object>) taskConfig.get("options");
 
               try {
-                // register the task using internal method which doesn't change shared preferences.
+                // register the task using internal method which doesn't change shared
+                // preferences.
                 internalRegisterTask(taskName, appScopeKey, appUrl, consumerClass, options);
               } catch (TaskRegisteringFailedException e) {
                 Log.e(TAG, e.getMessage());
               }
             } else {
-              Log.w(TAG, "Task consumer '" + consumerClassString + "' has version '" + currentConsumerVersion + "' that is not compatible with the saved version '" + previousConsumerVersion + "'.");
+              Log.w(TAG, "Task consumer '" + consumerClassString + "' has version '" + currentConsumerVersion
+                  + "' that is not compatible with the saved version '" + previousConsumerVersion + "'.");
             }
           } catch (ClassNotFoundException | NullPointerException e) {
             Log.e(TAG, e.getMessage());
@@ -587,7 +596,8 @@ public class TaskService implements SingletonModule, TaskServiceInterface {
   }
 
   /**
-   * Returns task manager for given appScopeKey. Task managers initialized in non-headless contexts have precedence over headless one.
+   * Returns task manager for given appScopeKey. Task managers initialized in
+   * non-headless contexts have precedence over headless one.
    */
   @Nullable
   private TaskManagerInterface getTaskManager(String appScopeKey) {

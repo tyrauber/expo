@@ -17,13 +17,13 @@ import android.util.Log;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.collection.ArraySet;
 
 import expo.modules.interfaces.taskManager.TaskExecutionCallback;
 import expo.modules.interfaces.taskManager.TaskInterface;
@@ -31,7 +31,8 @@ import expo.modules.interfaces.taskManager.TaskManagerUtilsInterface;
 
 public class TaskManagerUtils implements TaskManagerUtilsInterface {
 
-  // Key that every job created by the task manager must contain in its extras bundle.
+  // Key that every job created by the task manager must contain in its extras
+  // bundle.
   private static final String EXTRAS_REQUIRED_KEY = "expo.modules.taskManager";
   private static final String TAG = "TaskManagerUtils";
 
@@ -40,9 +41,16 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
 
   private static final int DEFAULT_OVERRIDE_DEADLINE = 60 * 1000; // 1 minute
 
-  private static final Set<TaskInterface> sTasksReschedulingJob = new ArraySet<>();
+  // Android limits apps to 100 total scheduled jobs.
+  private static final int ANDROID_JOB_LIMIT = 100;
 
-  //region TaskManagerUtilsInterface
+  // Reserve some job slots for safety margin (race conditions, other components).
+  private static final int JOB_LIMIT_SAFETY_BUFFER = 10;
+
+  // Minimum jobs per task to ensure functionality even with many tasks.
+  private static final int MIN_JOBS_PER_TASK = 3;
+
+  // region TaskManagerUtilsInterface
 
   @Override
   public PendingIntent createTaskIntent(Context context, TaskInterface task) {
@@ -99,20 +107,8 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
     return data;
   }
 
-  //endregion TaskManagerUtilsInterface
-  //region static helpers
-
-  static boolean notifyTaskJobCancelled(TaskInterface task) {
-    boolean isRescheduled = sTasksReschedulingJob.contains(task);
-
-    if (isRescheduled) {
-      sTasksReschedulingJob.remove(task);
-    }
-    return isRescheduled;
-  }
-
-  //endregion static helpers
-  //region private helpers
+  // endregion TaskManagerUtilsInterface
+  // region private helpers
 
   private void updateOrScheduleJob(Context context, TaskInterface task, List<PersistableBundle> data) {
     JobScheduler jobScheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
@@ -124,7 +120,8 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
 
     List<JobInfo> pendingJobs = jobScheduler.getAllPendingJobs();
     if (pendingJobs == null) {
-      // There is a mismatch between documentation and implementation. In the reference implementation null is returned in case of RemoteException:
+      // There is a mismatch between documentation and implementation. In the
+      // reference implementation null is returned in case of RemoteException:
       // https://android.googlesource.com/platform//frameworks/base/+/980636f0a5440a12f5d8896d8738c6fcf2430553/apex/jobscheduler/framework/java/android/app/JobSchedulerImpl.java#137
       pendingJobs = new ArrayList<>();
     }
@@ -136,36 +133,93 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
       }
     });
 
-    // We will be looking for the lowest number that is not being used yet.
+    // Count existing jobs for this task, find lowest unused job ID, track
+    // the newest job (highest ID) for potential merging, and count unique tasks.
     int newJobId = 0;
+    int pendingJobsForTask = 0;
+    JobInfo newestJobForTask = null;
+    Set<String> uniqueTaskNames = new HashSet<>();
 
     for (JobInfo jobInfo : pendingJobs) {
       int jobId = jobInfo.getId();
+      PersistableBundle extras = jobInfo.getExtras();
+
+      // Track unique task names for dynamic threshold calculation
+      if (extras != null && extras.containsKey(EXTRAS_REQUIRED_KEY)) {
+        String jobTaskName = extras.getString("taskName");
+        if (jobTaskName != null) {
+          uniqueTaskNames.add(jobTaskName);
+        }
+      }
 
       if (isJobInfoRelatedToTask(jobInfo, task)) {
-        JobInfo mergedJobInfo = createJobInfoByAddingData(jobInfo, data);
-
-        // Add the task to the list of rescheduled tasks.
-        sTasksReschedulingJob.add(task);
-
-        try {
-          // Cancel jobs with the same ID to let them be rescheduled.
-          jobScheduler.cancel(jobId);
-
-          // Reschedule job for given task.
-          jobScheduler.schedule(mergedJobInfo);
-        } catch (IllegalStateException e) {
-          Log.e(this.getClass().getName(), "Unable to reschedule a job: " + e.getMessage());
+        pendingJobsForTask++;
+        // Track the newest (highest ID) job for this task
+        if (newestJobForTask == null || jobId > newestJobForTask.getId()) {
+          newestJobForTask = jobInfo;
         }
-        return;
+
+        // Skip this job ID, continue looking for an unused ID
+        if (newJobId == jobId) {
+          newJobId++;
+        }
+        continue;
       }
       if (newJobId == jobId) {
         newJobId++;
       }
     }
 
+    // Include current task in count if not already present
+    uniqueTaskNames.add(task.getName());
+
+    // Calculate dynamic per-task job limit based on number of unique tasks.
+    // This ensures fair distribution of Android's 100 job limit across all tasks.
+    int availableSlots = ANDROID_JOB_LIMIT - JOB_LIMIT_SAFETY_BUFFER;
+    int maxJobsPerTask = Math.max(MIN_JOBS_PER_TASK, availableSlots / uniqueTaskNames.size());
+
+    // Check if we've hit the per-task job limit.
+    // This prevents job exhaustion while still avoiding the ANR-causing
+    // cancel/reschedule pattern.
+    if (pendingJobsForTask >= maxJobsPerTask) {
+      // At limit: merge into the NEWEST pending job instead of dropping data.
+      // We only reschedule the newest job (which was recently scheduled anyway),
+      // preserving the older jobs' execution timeline. This prevents both:
+      // - Data loss (we merge instead of drop)
+      // - ANR (older jobs still execute on schedule)
+      if (newestJobForTask != null) {
+        Log.i(TAG, "Job limit reached for task '" + task.getName() + "' (" + pendingJobsForTask +
+            "/" + maxJobsPerTask + ", " + uniqueTaskNames.size() + " tasks). " +
+            "Merging data into newest job (id=" + newestJobForTask.getId() + ").");
+        try {
+          JobInfo mergedJobInfo = createJobInfoByMergingData(newestJobForTask, data);
+          jobScheduler.cancel(newestJobForTask.getId());
+          jobScheduler.schedule(mergedJobInfo);
+        } catch (IllegalStateException e) {
+          Log.e(this.getClass().getName(), "Unable to merge into existing job: " + e.getMessage());
+        }
+      }
+      return;
+    }
+
+    // Don't merge data into existing jobs and don't cancel/reschedule them.
+    //
+    // The original code merged new data into pending jobs, then cancelled and
+    // rescheduled them. This cancel/reschedule pattern resets Android's job
+    // scheduling state, preventing the job from ever becoming "old enough" to
+    // execute. The job keeps getting deferred as "new", data accumulates
+    // indefinitely, and eventually exceeds the Binder transaction limit (~1MB),
+    // causing "No response to onStartJob" ANR errors.
+    //
+    // The fix: Let existing jobs run naturally on their own timeline.
+    // Schedule new data as a separate job with a different ID.
+    // This ensures each batch of data will be delivered independently.
+    if (pendingJobsForTask > 0) {
+      Log.i(TAG, "Task '" + task.getName() + "' has " + pendingJobsForTask +
+          " pending job(s). Scheduling new job (id=" + newJobId + ") instead of merging.");
+    }
+
     try {
-      // Given task doesn't have any pending jobs yet, create a new JobInfo and schedule it then.
       JobInfo jobInfo = createJobInfo(context, task, newJobId, data);
       jobScheduler.schedule(jobInfo);
     } catch (IllegalStateException e) {
@@ -173,15 +227,15 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
     }
   }
 
-  private JobInfo createJobInfoByAddingData(JobInfo jobInfo, List<PersistableBundle> data) {
+  private JobInfo createJobInfoByMergingData(JobInfo jobInfo, List<PersistableBundle> data) {
     PersistableBundle mergedExtras = jobInfo.getExtras();
-    int dataSize = mergedExtras.getInt("dataSize", 0);
+    int existingDataSize = mergedExtras.getInt("dataSize", 0);
 
     if (data != null) {
-      mergedExtras.putInt("dataSize", dataSize + data.size());
+      mergedExtras.putInt("dataSize", existingDataSize + data.size());
 
       for (int i = 0; i < data.size(); i++) {
-        mergedExtras.putPersistableBundle(String.valueOf(dataSize + i), data.get(i));
+        mergedExtras.putPersistableBundle(String.valueOf(existingDataSize + i), data.get(i));
       }
     }
     return createJobInfo(jobInfo.getId(), jobInfo.getService(), mergedExtras);
@@ -196,13 +250,14 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
 
     // query param is called appId for legacy reasons
     Uri dataUri = new Uri.Builder()
-      .appendQueryParameter("appId", appScopeKey)
-      .appendQueryParameter("taskName", taskName)
-      .build();
+        .appendQueryParameter("appId", appScopeKey)
+        .appendQueryParameter("taskName", taskName)
+        .build();
 
     intent.setData(dataUri);
 
-    // We're defaulting to the behaviour prior API 31 (mutable) even though Android recommends immutability
+    // We're defaulting to the behaviour prior API 31 (mutable) even though Android
+    // recommends immutability
     int mutableFlag = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_MUTABLE : 0;
     return PendingIntent.getBroadcast(context, PENDING_INTENT_REQUEST_CODE, intent, flags | mutableFlag);
   }
@@ -216,10 +271,10 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
 
   private JobInfo createJobInfo(int jobId, ComponentName jobService, PersistableBundle extras) {
     return new JobInfo.Builder(jobId, jobService)
-      .setExtras(extras)
-      .setMinimumLatency(0)
-      .setOverrideDeadline(DEFAULT_OVERRIDE_DEADLINE)
-      .build();
+        .setExtras(extras)
+        .setMinimumLatency(0)
+        .setOverrideDeadline(DEFAULT_OVERRIDE_DEADLINE)
+        .build();
   }
 
   private JobInfo createJobInfo(Context context, TaskInterface task, int jobId, List<PersistableBundle> data) {
@@ -260,8 +315,8 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
     return false;
   }
 
-  //endregion private helpers
-  //region converting map to bundle
+  // endregion private helpers
+  // region converting map to bundle
 
   @SuppressWarnings("unchecked")
   static Bundle mapToBundle(Map<String, Object> map) {
@@ -337,5 +392,5 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
     return arrayList;
   }
 
-  //endregion converting map to bundle
+  // endregion converting map to bundle
 }
